@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Audio → IA (Log-Mel)</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      margin-top: 40px;
+      background: #f7f7f7;
+    }
+    button {
+      padding: 12px 24px;
+      font-size: 16px;
+      border-radius: 8px;
+      border: none;
+      background-color: #4CAF50;
+      color: white;
+      cursor: pointer;
+    }
+    #progressContainer {
+      width: 300px;
+      height: 15px;
+      background-color: #ddd;
+      border-radius: 8px;
+      margin: 20px auto;
+      overflow: hidden;
+      visibility: hidden; /* invisible tant qu'on n'enregistre pas */
+    }
+    #progressBar {
+      width: 0%;
+      height: 100%;
+      background-color: #4CAF50;
+      transition: width 0.05s linear;
+    }
+    p { font-size: 18px; }
+
+    /* ====== AJOUT : Commandes manuelles (D-pad) ====== */
+    .manual-card{
+      width: min(520px, 92vw);
+      margin: 0 auto 22px auto;
+      padding: 16px 16px 18px;
+      background: #ffffff;
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.08);
+      border: 1px solid rgba(0,0,0,.06);
+    }
+
+    .manual-title{
+      margin: 0 0 12px 0;
+      font-size: 16px;
+      color: #333;
+      opacity: .9;
+    }
+    /*
+    dpad{
+      display: grid;
+      grid-template-columns: 90px 90px 90px;
+      grid-template-rows: 56px 56px 56px;
+      gap: 10px;
+      justify-content: center;
+      align-items: center;
+    }*/
+    .dpad{
+      display: grid;
+      grid-template-columns: 90px 90px 90px;
+      grid-template-rows: 60px 80px 60px;
+      gap: 10px;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .cmd-btn{
+      height: 56px;
+      width: 90px;
+      border: none;
+      border-radius: 14px;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 15px;
+      color: white;
+      box-shadow: 0 10px 20px rgba(0,0,0,.10);
+      transition: transform .08s ease, box-shadow .08s ease, filter .08s ease;
+    }
+
+    .cmd-btn:active{
+      transform: translateY(2px) scale(0.99);
+      box-shadow: 0 6px 12px rgba(0,0,0,.10);
+      filter: brightness(.95);
+    }
+
+    .cmd-left  { background: linear-gradient(135deg, #5B8CFF, #2E63F3); grid-column: 1; grid-row: 2; }
+    .cmd-right { background: linear-gradient(135deg, #5B8CFF, #2E63F3); grid-column: 3; grid-row: 2; }
+    .cmd-up    { background: linear-gradient(135deg, #34D399, #16A34A); grid-column: 2; grid-row: 1; }
+    .cmd-down  { background: linear-gradient(135deg, #34D399, #16A34A); grid-column: 2; grid-row: 3; }
+
+    .cmd-stop{
+      background: linear-gradient(135deg, #FF5B5B, #E11D48);
+      grid-column: 2;
+      grid-row: 2;
+      width: 92px;
+      height: 92px;
+      border-radius: 999px;
+      font-size: 16px;
+      box-shadow: 0 14px 26px rgba(225, 29, 72, .25);
+      border: 2px solid rgba(255,255,255,.55);
+    }
+
+    .cmd-hint{
+      margin-top: 12px;
+      font-size: 14px;
+      color: #444;
+      opacity: .85;
+    }
+
+  </style>
+</head>
+<body>
+
+  <h2>Enregistrement Audio - Commandes manuelles</h2>
+
+  <!-- ===== AJOUT : Commandes manuelles ===== -->
+  <div class="manual-card">
+    <p class="manual-title">🕹️- Commandes manuelles</p>
+  
+    <div class="dpad">
+      <button class="cmd-btn cmd-up" data-cmd="go">↑</button>
+      <button class="cmd-btn cmd-left" data-cmd="left">←</button>
+      <button class="cmd-btn cmd-stop" data-cmd="stop">STOP</button>
+      <button class="cmd-btn cmd-right" data-cmd="right">→</button>
+      <button class="cmd-btn cmd-down" data-cmd="backward">↓</button>
+    </div>
+  
+    <p class="cmd-hint">Clique sur un bouton pour envoyer une action directe au serveur.</p>
+  </div>
+  
+  <button id="recordBtn">🎙️- Enregistrer audio</button>
+  <p id="status"></p>
+
+  <!-- BARRE DE PROGRESSION -->
+  <div id="progressContainer">
+    <div id="progressBar"></div>
+  </div>
+
+  <script>
+    const btn = document.getElementById("recordBtn");
+    const status = document.getElementById("status");
+    const progressContainer = document.getElementById("progressContainer");
+    const progressBar = document.getElementById("progressBar");
+
+    // -------------------------------------------------------
+    // BARRE DE PROGRESSION SUR 1 SECONDE
+    // -------------------------------------------------------
+    function startProgressBar(duration_ms) {
+      progressContainer.style.visibility = "visible";
+      progressBar.style.width = "0%";
+
+      let start = performance.now();
+
+      function animateBar(now) {
+        let elapsed = now - start;
+        let progress = Math.min(elapsed / duration_ms, 1); // 0 → 1
+
+        progressBar.style.width = (progress * 100) + "%";
+
+        if (progress < 1) {
+          requestAnimationFrame(animateBar);
+        }
+      }
+
+      requestAnimationFrame(animateBar);
+    }
+
+    // -------------------------------------------------------
+    // Convertir AudioBuffer → WAV 16 bits
+    // -------------------------------------------------------
+    function audioBufferToWav(buffer) {
+      let numOfChan = buffer.numberOfChannels,
+          sampleRate = buffer.sampleRate,
+          format = 1,
+          bitDepth = 16;
+
+      let samples = buffer.getChannelData(0);
+
+      let bufferLength = samples.length * 2 + 44;
+      let arrayBuffer = new ArrayBuffer(bufferLength);
+      let view = new DataView(arrayBuffer);
+
+      function writeString(view, offset, string) {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      }
+
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + samples.length * 2, true);
+      writeString(view, 8, 'WAVE');
+
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, format, true);
+      view.setUint16(22, numOfChan, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * numOfChan * 2, true);
+      view.setUint16(32, numOfChan * 2, true);
+      view.setUint16(34, bitDepth, true);
+
+      writeString(view, 36, 'data');
+      view.setUint32(40, samples.length * 2, true);
+
+      let index = 44;
+      for (let i = 0; i < samples.length; i++) {
+        let s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(index, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+        index += 2;
+      }
+
+      return new Blob([view], { type: 'audio/wav' });
+    }
+
+    // -------------------------------------------------------
+    // Envoi du WAV au serveur Flask
+    // -------------------------------------------------------
+    async function sendAudioToServer(wavBlob) {
+      status.textContent = "Analyse par l'IA...";
+
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64Audio = reader.result.split(",")[1];
+
+        const response = await fetch("http://localhost:5000/predict_audio", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ audio: base64Audio })
+        });
+
+        const result = await response.json();
+        status.textContent = "Mot détecté : " + result.label;
+      };
+
+      reader.readAsDataURL(wavBlob);
+    }
+
+    // -------------------------------------------------------
+    // Enregistrement audio → 1 seconde
+    // -------------------------------------------------------
+    btn.onclick = async () => {
+      try {
+        status.textContent = "Enregistrement...";
+
+        // 🔥 LANCEMENT BARRE 1 SECONDE
+        startProgressBar(1000);  // 1000 ms = 1 seconde
+
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioContext = new AudioContext({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(stream);
+
+        const recorder = audioContext.createScriptProcessor(4096, 1, 1);
+        let chunks = [];
+
+        recorder.onaudioprocess = (event) => {
+          const input = event.inputBuffer.getChannelData(0);
+          chunks.push(new Float32Array(input));
+        };
+
+        source.connect(recorder);
+        recorder.connect(audioContext.destination);
+
+        // Enregistrer 1 seconde
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Stop streams
+        stream.getTracks().forEach(t => t.stop());
+        recorder.disconnect();
+
+        // Fusion des échantillons
+        let totalLength = chunks.reduce((sum, a) => sum + a.length, 0);
+        let audioData = new Float32Array(totalLength);
+        let offset = 0;
+        for (let chunk of chunks) {
+          audioData.set(chunk, offset);
+          offset += chunk.length;
+        }
+
+        let audioBuffer = audioContext.createBuffer(1, audioData.length, audioContext.sampleRate);
+        audioBuffer.getChannelData(0).set(audioData);
+
+        // Création WAV
+        let wavBlob = audioBufferToWav(audioBuffer);
+
+        status.textContent = "Envoi au serveur...";
+        sendAudioToServer(wavBlob);
+
+      } catch (err) {
+        status.textContent = "Erreur : " + err.message;
+      }
+    };
+
+    // ===== AJOUT : Envoi commande manuelle =====
+    async function sendCmdToServer(cmd) {
+      try {
+        status.textContent = "Commande envoyée : " + cmd;
+      
+        const response = await fetch("http://localhost:5000/send_cmd", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cmd })
+        });
+      
+        const result = await response.json();
+        if (!response.ok || result.ok === false) {
+          status.textContent = "Erreur cmd : " + (result.error || "inconnue");
+          return;
+        }
+      
+        // status.textContent = "✅ Action envoyée : " + result.cmd;
+      } catch (err) {
+        status.textContent = "Erreur cmd : " + err.message;
+      }
+    }
+
+    // ===== AJOUT : Bind boutons =====
+    document.querySelectorAll("[data-cmd]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        sendCmdToServer(btn.dataset.cmd);
+      });
+    });
+
+  </script>
+
+</body>
+</html>
